@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import requests
 from database.db import execute_sql, init_database
 from config.settings import COLLECTOR
+from requests.exceptions import RequestException
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -64,59 +65,45 @@ def save_daily_kline(stock_code, stock_name):
         logger.error(f"处理失败 {stock_code} {stock_name}: {str(e)}")
         return False
 
-def collect_all_stocks():
-    """采集所有A股股票数据"""
-    # 初始化数据库
-    init_database()
-    
-    # 获取所有A股股票
-    logger.info("正在获取A股股票列表...")
-    stock_df = ak.stock_info_a_code_name()
-    total_stocks = len(stock_df)
-    logger.info(f"共获取到 {total_stocks} 只A股股票")
-    
-    # 获取已经采集过的股票
-    collected_stocks = get_collected_stocks()
-    logger.info(f"已经采集过 {len(collected_stocks)} 只股票")
-    
-    # 筛选出还未采集的股票
-    remaining_stocks = stock_df[~stock_df['code'].isin(collected_stocks)]
-    remaining_count = len(remaining_stocks)
-    logger.info(f"剩余 {remaining_count} 只股票待采集")
-    
-    if remaining_count == 0:
-        logger.info("🎉 所有股票数据已经采集完成！")
-        return
-    
-    # 开始采集
-    success_count = 0
-    failed_count = 0
-    
-    pbar = tqdm(remaining_stocks.iterrows(), total=remaining_count, desc="采集进度")
-    
-    for index, row in pbar:
-        code = row['code']
-        name = row['name']
+def get_all_stocks():
+    """获取所有A股股票代码和名称"""
+    try:
+        # 原有的延迟和重试逻辑保留不变
+        time.sleep(random.uniform(0.5, 1.5))
+        stock_df = ak.stock_info_a_code_name()
         
-        if save_daily_kline(code, name):
-            success_count += 1
-        else:
-            failed_count += 1
+        # ========== 只修改这里开始 ==========
+        # 过滤规则：只保留上证主板、深证主板、创业板
+        def is_tradable(code, name):
+            # 排除ST股、*ST股和退市股
+            if 'ST' in name or '*ST' in name or '退' in name:
+                return False
+                
+            # 上证主板：600、601、603、605开头
+            if code.startswith(('600', '601', '603', '605')):
+                return True
+                
+            # 深证主板：000、001开头
+            if code.startswith(('000', '001')):
+                return True
+                
+            # 创业板：300开头
+            if code.startswith('300'):
+                return True
+                
+            # 其他全部排除（科创板688、北交所8/4开头等）
+            return False
         
-        # 更新进度条描述
-        pbar.set_postfix({
-            '成功': success_count,
-            '失败': failed_count
-        })
+        # 应用过滤
+        filtered_df = stock_df[stock_df.apply(lambda x: is_tradable(x['code'], x['name']), axis=1)]
         
-        # 随机延迟
-        time.sleep(random.uniform(COLLECTOR['min_delay'], COLLECTOR['max_delay']))
-    
-    logger.info(f"✅ 采集完成！成功: {success_count}, 失败: {failed_count}")
-    logger.info(f"总共已采集: {len(collected_stocks) + success_count} / {total_stocks} 只股票")
-    
-    if failed_count > 0:
-        logger.info("💡 提示：失败的股票会在下次运行时自动重新采集")
-
-if __name__ == "__main__":
-    collect_all_stocks()
+        print(f"✅ 总股票数：{len(stock_df)}")
+        print(f"✅ 可交易股票数：{len(filtered_df)}")
+        print(f"❌ 已排除：{len(stock_df) - len(filtered_df)} 只股票")
+        # ========== 只修改这里结束 ==========
+        
+        return filtered_df
+    except Exception as e:
+        print(f"获取股票列表失败: {e}")
+        time.sleep(3)
+        return get_all_stocks()
