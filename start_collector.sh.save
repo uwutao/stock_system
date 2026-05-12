@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# 1. 自动配置DNS
+echo "正在配置DNS..."
+sudo tee /etc/resolv.conf << 'EOF'
+nameserver 223.5.5.5
+nameserver 223.6.6.6
+EOF
+
+# 2. 自动设置代理（连接Windows上的代理服务器）
+echo "正在设置代理..."
+export HTTP_PROXY=http://172.17.0.1:8080
+export HTTPS_PROXY=http://172.17.0.1:8080
+
+# 3. 激活虚拟环境
+echo "正在激活虚拟环境..."
+source venv/bin/activate
+
+# 4. 运行采集脚本
+echo "开始采集数据..."
+python scripts/run_collector.py

@@ -1,0 +1,11 @@
+# 2026年5月最新稳定兼容版本
+akshare==1.18.59
+pandas==2.2.3
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.10
+redis==5.2.0
+python-dotenv==1.0.1
+streamlit==1.38.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.3.0
