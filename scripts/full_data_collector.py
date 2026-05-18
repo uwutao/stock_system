@@ -1,29 +1,73 @@
-import akshare as ak
+import baostock as bs
 import pandas as pd
 from sqlalchemy import create_engine, text
 import time
 import random
 from tqdm import tqdm
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import requests
 
 # 数据库连接配置
 DB_URI = 'postgresql://postgres:stock123456@localhost:5432/stock_data'
 engine = create_engine(DB_URI, pool_pre_ping=True)
 
-# 重试机制：遇到网络错误最多重试5次，指数退避等待
+# 重试机制：遇到异常最多重试5次，指数退避等待
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=2, max=15),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, ConnectionResetError))
+    retry=retry_if_exception_type((Exception,))
 )
 def get_stock_kline(stock_code, start_date="20200101"):
-    return ak.stock_zh_a_hist(
-        symbol=stock_code, 
-        period="daily", 
-        start_date=start_date, 
-        adjust="qfq"
-    )
+    """
+    通过Baostock获取股票K线数据
+    :param stock_code: 纯数字代码（如600000）
+    :param start_date: 开始日期（YYYYMMDD）
+    :return: DataFrame
+    """
+    # 1. 登录Baostock
+    lg = bs.login()
+    if lg.error_code != '0':
+        raise Exception(f"Baostock登录失败: {lg.error_msg}")
+    
+    try:
+        # 2. 处理股票代码前缀
+        if stock_code.startswith(('600', '601', '603', '605')):
+            bs_code = f"sh.{stock_code}"
+        elif stock_code.startswith(('000', '001', '300')):
+            bs_code = f"sz.{stock_code}"
+        else:
+            return pd.DataFrame()
+        
+        # 3. 获取K线数据
+        fields = "date,open,high,low,close,preclose,volume,amount,turnover,change,pctChg"
+        rs = bs.query_history_k_data_plus(
+            code=bs_code,
+            fields=fields,
+            start_date=start_date,
+            end_date="",
+            frequency="d",
+            adjustflag="2"  # 前复权
+        )
+        
+        # 4. 转换为DataFrame
+        data_list = []
+        while (rs.error_code == '0') & rs.next():
+            data_list.append(rs.get_row_data())
+        df = pd.DataFrame(data_list, columns=rs.fields)
+        
+        # 5. 数据类型转换
+        numeric_fields = ['open', 'high', 'low', 'close', 'preclose', 'volume', 
+                         'amount', 'turnover', 'change', 'pctChg']
+        for field in numeric_fields:
+            df[field] = pd.to_numeric(df[field], errors='coerce')
+        
+        # 6. 计算振幅
+        df['amplitude'] = (df['high'] - df['low']) / df['preclose'] * 100
+        df['amplitude'] = df['amplitude'].round(2)
+        
+        return df
+    
+    finally:
+        bs.logout()
 
 def init_database():
     """初始化数据库表结构"""
@@ -66,11 +110,15 @@ def save_daily_kline(stock_code, stock_name, start_date="20200101"):
 
         # 数据清洗和重命名
         df.rename(columns={
-            '日期': 'trade_date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_chg',
-            '涨跌额': 'change_amount', '换手率': 'turnover'
+            'date': 'trade_date',
+            'pctChg': 'pct_chg',
+            'change': 'change_amount'
         }, inplace=True)
+        
+        # 保留需要的字段
+        keep_fields = ['trade_date', 'open', 'close', 'high', 'low', 'volume', 
+                      'amount', 'amplitude', 'pct_chg', 'change_amount', 'turnover']
+        df = df[keep_fields]
         
         df['stock_code'] = stock_code
         df['stock_name'] = stock_name
@@ -94,15 +142,28 @@ def save_daily_kline(stock_code, stock_name, start_date="20200101"):
 if __name__ == "__main__":
     # 安装必要的依赖
     import subprocess
-    subprocess.run(["pip", "install", "tqdm", "tenacity", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
+    subprocess.run(["pip", "install", "baostock", "tqdm", "tenacity", "psycopg2-binary", 
+                   "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
     
     # 初始化数据库
     print("正在初始化数据库...")
     init_database()
     
-    # 获取所有A股股票
+    # 获取所有A股股票（通过Baostock）
     print("正在获取A股股票列表...")
-    stock_df = ak.stock_info_a_code_name()
+    lg = bs.login()
+    if lg.error_code != '0':
+        raise Exception(f"Baostock登录失败: {lg.error_msg}")
+    
+    rs = bs.query_stock_basic(code_name="", exchange="", field="code,code_name")
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+    stock_df = pd.DataFrame(data_list, columns=['code', 'name'])
+    bs.logout()
+    
+    # 去掉前缀，只保留数字代码
+    stock_df['code'] = stock_df['code'].str.replace('sh.', '').str.replace('sz.', '')
     total_stocks = len(stock_df)
     print(f"共获取到 {total_stocks} 只A股股票")
     
