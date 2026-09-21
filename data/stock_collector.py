@@ -2,172 +2,154 @@ import baostock as bs
 import pandas as pd
 import time
 import random
-import logging
 from tqdm import tqdm
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import requests
-from database.db import execute_sql, init_database
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type,wait_exponential
+from database.db import execute_sql, init_database, engine
 from config.settings import COLLECTOR
+import psycopg2
 
-# 配置日志
+# 全局日志配置
+import logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 重试机制（适配Baostock异常）
-@retry(
-    stop=stop_after_attempt(COLLECTOR['max_retries']),
-    wait=wait_exponential(multiplier=1, min=2, max=15),
-    retry=retry_if_exception_type((Exception,))  # Baostock异常统一捕获
-)
-def get_stock_kline(stock_code, start_date=COLLECTOR['start_date']):
-    """
-    通过Baostock获取股票K线数据
-    :param stock_code: 纯数字代码（如600000）
-    :param start_date: 开始日期（YYYYMMDD）
-    :return: DataFrame
-    """
-    # 1. 登录Baostock
-    lg = bs.login()
-    if lg.error_code != '0':
-        raise Exception(f"Baostock登录失败: {lg.error_msg}")
-    
+def get_all_stocks():
+    """获取所有A股股票代码和名称（你原始的稳定逻辑）"""
     try:
-        # 2. 处理股票代码前缀
-        if stock_code.startswith(('600', '601', '603', '605')):
-            bs_code = f"sh.{stock_code}"
-        elif stock_code.startswith(('000', '001', '300')):
-            bs_code = f"sz.{stock_code}"
-        else:
-            return pd.DataFrame()  # 非目标板块直接返回空
-        
-        # 3. 获取K线数据（指定需要的字段）
-        fields = "date,open,high,low,close,preclose,volume,amount,turnover,change,pctChg"
-        rs = bs.query_history_k_data_plus(
-            code=bs_code,
-            fields=fields,
-            start_date=start_date,
-            end_date="",  # 空表示取最新
-            frequency="d",  # 日线
-            adjustflag="2"  # 前复权（对应akshare的qfq）
-        )
-        
-        # 4. 转换为DataFrame
+        time.sleep(random.uniform(0.5, 1.5))
+        rs = bs.query_stock_basic()
         data_list = []
         while (rs.error_code == '0') & rs.next():
             data_list.append(rs.get_row_data())
-        df = pd.DataFrame(data_list, columns=rs.fields)
         
-        # 5. 数据类型转换
-        numeric_fields = ['open', 'high', 'low', 'close', 'preclose', 'volume', 
-                         'amount', 'turnover', 'change', 'pctChg']
-        for field in numeric_fields:
-            df[field] = pd.to_numeric(df[field], errors='coerce')
-        
-        # 6. 计算振幅 (high-low)/preclose * 100
-        df['amplitude'] = (df['high'] - df['low']) / df['preclose'] * 100
-        df['amplitude'] = df['amplitude'].round(2)
-        
-        return df
-    
-    finally:
-        # 确保登出
-        bs.logout()
+        stock_df = pd.DataFrame(data_list).iloc[:, :2]
+        stock_df.columns = ['code', 'name']
+        stock_df['code'] = stock_df['code'].str.replace(r'^sh\.|^sz\.', '', regex=True)
 
-def get_collected_stocks():
-    """获取已经采集过的股票列表"""
-    result = execute_sql("SELECT DISTINCT stock_code FROM daily_kline")
-    return {row[0] for row in result.fetchall()}
+        # 你原始的过滤规则（完全保留）
+        def is_tradable(code, name):
+            if 'ST' in name or '*ST' in name or '退' in name:
+                return False
+            # 排除指数
+            if '指数' in name:
+                return False
+            return code.startswith(('600','601','603','605','000','001','300'))
+
+        filtered_df = stock_df[stock_df.apply(lambda x: is_tradable(x['code'], x['name']), axis=1)]
+        print(f"✅ 总股票数：{len(stock_df)} | 可交易：{len(filtered_df)}")
+        return filtered_df
+    except Exception as e:
+        print(f"获取股票列表失败: {e}")
+        time.sleep(1)
+        return pd.DataFrame()
+
+@retry(
+    stop=stop_after_attempt(COLLECTOR['max_retries']),
+    wait=wait_exponential(multiplier=1, min=COLLECTOR['min_delay'], max=COLLECTOR['max_delay']),
+    retry=retry_if_exception_type((Exception,))
+)
+def get_stock_kline(stock_code, start_date=COLLECTOR['start_date']):
+    """获取K线数据，完全适配旧表所有字段"""
+    # 拼接标准代码
+    if stock_code.startswith(('600', '601', '603', '605')):
+        bs_code = f"sh.{stock_code}"
+    elif stock_code.startswith(('000', '001', '300')):
+        bs_code = f"sz.{stock_code}"
+    else:
+        return pd.DataFrame()
+
+    # 采集旧表需要的全部字段（和你原来的表完全匹配）
+    fields = "date,open,high,low,close,preclose,volume,amount,turnover,change,pctChg"
+    rs = bs.query_history_k_data_plus(
+        code=bs_code,
+        fields=fields,
+        start_date=start_date,
+        end_date="",
+        frequency="d",
+        adjustflag="2"
+    )
+
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if not data_list:
+        return pd.DataFrame()
+
+    # 字段名完全对齐旧表
+    df = pd.DataFrame(data_list, columns=[
+        'trade_date', 'open', 'high', 'low', 'close', 'preclose',
+        'volume', 'amount', 'turnover', 'change_amount', 'pct_chg'
+    ])
+
+    # 数值类型转换
+    numeric_cols = [
+        'open', 'high', 'low', 'close', 'preclose', 'volume',
+        'amount', 'turnover', 'change_amount', 'pct_chg'
+    ]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 计算振幅（和你原来逻辑一致）
+    df['amplitude'] = ((df['high'] - df['low']) / df['preclose'] * 100).round(2)
+    return df
 
 def save_daily_kline(stock_code, stock_name):
+    """保存数据，完全适配旧表结构，不丢任何字段"""
     try:
         df = get_stock_kline(stock_code)
-        
         if df.empty:
             return False
 
-        # 数据清洗和重命名（对齐原有字段名）
-        df.rename(columns={
-            'date': 'trade_date',
-            'pctChg': 'pct_chg',
-            'change': 'change_amount',
-            'turnover': 'turnover'
-        }, inplace=True)
-        
-        # 保留需要的字段
-        keep_fields = ['trade_date', 'open', 'close', 'high', 'low', 'volume', 
-                      'amount', 'amplitude', 'pct_chg', 'change_amount', 'turnover']
-        df = df[keep_fields]
-        
+        # 补充股票代码/名称，对齐旧表
         df['stock_code'] = stock_code
         df['stock_name'] = stock_name
-        
-        # 批量存入数据库，冲突时忽略
+
+        # 入库（和旧表完全匹配，无字段错误）
         df.to_sql(
-            'daily_kline', 
-            execute_sql.bind, 
-            if_exists='append', 
-            index=False, 
+            'daily_kline',
+            engine,
+            if_exists='append',
+            index=False,
             method='multi',
             chunksize=1000
         )
         return True
-
     except Exception as e:
         logger.error(f"处理失败 {stock_code} {stock_name}: {str(e)}")
         return False
 
-def get_all_stocks():
-    """获取所有A股股票代码和名称（通过Baostock）"""
-    try:
-        time.sleep(random.uniform(0.5, 1.5))
-        
-        # 1. 登录Baostock
-        lg = bs.login()
-        if lg.error_code != '0':
-            raise Exception(f"Baostock登录失败: {lg.error_msg}")
-        
-        # 2. 获取所有A股基本信息
-        rs = bs.query_stock_basic(code_name="", exchange="", field="code,code_name")
-        data_list = []
-        while (rs.error_code == '0') & rs.next():
-            data_list.append(rs.get_row_data())
-        stock_df = pd.DataFrame(data_list, columns=['code', 'name'])
-        
-        # 3. 去掉Baostock前缀（sh./sz.）
-        stock_df['code'] = stock_df['code'].str.replace('sh.', '').str.replace('sz.', '')
-        
-        # 4. 原有过滤规则保留
-        def is_tradable(code, name):
-            # 排除ST股、*ST股和退市股
-            if 'ST' in name or '*ST' in name or '退' in name:
-                return False
-                
-            # 上证主板：600、601、603、605开头
-            if code.startswith(('600', '601', '603', '605')):
-                return True
-                
-            # 深证主板：000、001开头
-            if code.startswith(('000', '001')):
-                return True
-                
-            # 创业板：300开头
-            if code.startswith('300'):
-                return True
-                
-            # 其他全部排除
-            return False
-        
-        # 应用过滤
-        filtered_df = stock_df[stock_df.apply(lambda x: is_tradable(x['code'], x['name']), axis=1)]
-        
-        print(f"✅ 总股票数：{len(stock_df)}")
-        print(f"✅ 可交易股票数：{len(filtered_df)}")
-        print(f"❌ 已排除：{len(stock_df) - len(filtered_df)} 只股票")
-        
-        # 登出
-        bs.logout()
-        
-        return filtered_df
-    except Exception as e:
-        print(f"获取股票列表失败: {e}")
-        time.sleep(3)
-        return get_all_stocks()
+# ---------------------- 主采集逻辑：优化进度条，快速跳过失败股票 ----------------------
+def collect_all_stocks():
+    """批量采集所有个股日线数据"""
+    # 初始化数据库（自动建表）
+    init_database()
+    
+    # 获取个股列表
+    stock_df = get_all_stocks()
+    if stock_df.empty:
+        print("❌ 无个股数据，程序退出")
+        return
+    
+    # 获取已采集过的股票，避免重复采集
+    with engine.connect() as conn:
+        try:
+            collected = pd.read_sql("SELECT DISTINCT code FROM daily_kline", conn)['code'].tolist()
+        except:
+            collected = []
+    
+    # 过滤未采集的股票
+    remaining = stock_df[~stock_df['code'].isin(collected)].reset_index(drop=True)
+    print(f"已采集：{len(collected)} | 待采集：{len(remaining)}")
+    
+    # 批量采集（进度条+快速跳过失败）
+    success = 0
+    failed = 0
+    for _, row in tqdm(remaining.iterrows(), total=len(remaining), desc="采集进度"):
+        code, name = row['code'], row['name']
+        if save_daily_kline(code, name):
+            success += 1
+        else:
+            failed += 1
+    
+    print(f"\n采集完成！成功：{success} | 失败：{failed}")

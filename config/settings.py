@@ -24,10 +24,10 @@ OLLAMA = {
 
 # 数据采集配置
 COLLECTOR = {
-    'start_date': '20200101',
-    'max_retries': 5,
-    'min_delay': 0.8,
-    'max_delay': 2.0
+    'start_date': '2020-01-01',
+    'max_retries': 3,
+    'min_delay': 1,
+    'max_delay': 10
 }
 
 # 日志配置
