@@ -1,3 +1,7 @@
+import sys
+import os
+# 往上跳一层，拿到项目根目录，加入Python路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from config.settings import DB_URI

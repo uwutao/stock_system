@@ -16,7 +16,7 @@ engine = create_engine(DB_URI, pool_pre_ping=True)
     wait=wait_exponential(multiplier=1, min=2, max=15),
     retry=retry_if_exception_type((Exception,))
 )
-def get_stock_kline(stock_code, start_date="20200101"):
+def get_stock_kline(stock_code, start_date="2020-01-01"):
     """
     通过Baostock获取股票K线数据
     :param stock_code: 纯数字代码（如600000）

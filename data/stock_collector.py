@@ -49,8 +49,7 @@ def get_all_stocks():
     retry=retry_if_exception_type((Exception,))
 )
 def get_stock_kline(stock_code, start_date=COLLECTOR['start_date']):
-    """获取K线数据，完全适配旧表所有字段"""
-    # 拼接标准代码
+    """获取k线数据，修复baostock change字段移除问题"""
     if stock_code.startswith(('600', '601', '603', '605')):
         bs_code = f"sh.{stock_code}"
     elif stock_code.startswith(('000', '001', '300')):
@@ -58,8 +57,8 @@ def get_stock_kline(stock_code, start_date=COLLECTOR['start_date']):
     else:
         return pd.DataFrame()
 
-    # 采集旧表需要的全部字段（和你原来的表完全匹配）
-    fields = "date,open,high,low,close,preclose,volume,amount,turnover,change,pctChg"
+    # 移除失效 change 字段
+    fields = "date,open,high,low,close,preclose,volume,amount,turn,pctChg"
     rs = bs.query_history_k_data_plus(
         code=bs_code,
         fields=fields,
@@ -76,48 +75,48 @@ def get_stock_kline(stock_code, start_date=COLLECTOR['start_date']):
     if not data_list:
         return pd.DataFrame()
 
-    # 字段名完全对齐旧表
     df = pd.DataFrame(data_list, columns=[
         'trade_date', 'open', 'high', 'low', 'close', 'preclose',
-        'volume', 'amount', 'turnover', 'change_amount', 'pct_chg'
+        'volume', 'amount', 'turnover', 'pct_chg'
     ])
-
-    # 数值类型转换
-    numeric_cols = [
-        'open', 'high', 'low', 'close', 'preclose', 'volume',
-        'amount', 'turnover', 'change_amount', 'pct_chg'
-    ]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # 计算振幅（和你原来逻辑一致）
-    df['amplitude'] = ((df['high'] - df['low']) / df['preclose'] * 100).round(2)
+    # 本地计算涨跌额，对应原来 change
+    df["change_amount"] = df["close"].astype(float) - df["preclose"].astype(float)
     return df
+
 
 def save_daily_kline(stock_code, stock_name):
     """保存数据，完全适配旧表结构，不丢任何字段"""
     try:
         df = get_stock_kline(stock_code)
         if df.empty:
+            logger.warning(f"{stock_code} {stock_name} 无K线数据，跳过")
             return False
-
         # 补充股票代码/名称，对齐旧表
         df['stock_code'] = stock_code
         df['stock_name'] = stock_name
 
-        # 入库（和旧表完全匹配，无字段错误）
-        df.to_sql(
-            'daily_kline',
-            engine,
-            if_exists='append',
-            index=False,
-            method='multi',
-            chunksize=1000
-        )
+        chunk_size = 200
+        total_rows = len(df)
+        logger.info(f"开始入库 {stock_code} {stock_name}，总行数 {total_rows}，分{ (total_rows + chunk_size -1) // chunk_size }批")
+
+        for i in range(0, total_rows, chunk_size):
+            batch_df = df.iloc[i:i+chunk_size]
+            batch_df.to_sql(
+                'daily_kline',
+                engine,
+                if_exists='append',
+                index=False,
+                # ========== 删掉 method="multi" 这一行！ ==========
+                chunksize=chunk_size
+            )
+            logger.info(f"  - {stock_code} 批次 {i//chunk_size+1} 完成，{len(batch_df)}行")
+
+        logger.info(f"✅ {stock_code} {stock_name} 全部入库完成，共 {total_rows} 行")
         return True
     except Exception as e:
-        logger.error(f"处理失败 {stock_code} {stock_name}: {str(e)}")
+        logger.error(f"❌ 处理失败 {stock_code} {stock_name}: {str(e)}")
         return False
+
 
 # ---------------------- 主采集逻辑：优化进度条，快速跳过失败股票 ----------------------
 def collect_all_stocks():
@@ -127,6 +126,7 @@ def collect_all_stocks():
     
     # 获取个股列表
     stock_df = get_all_stocks()
+    stock_df = stock_df[ stock_df['code'].str.match(r'^(600|601|603|605|000|001|300)\d{3}$') ]
     if stock_df.empty:
         print("❌ 无个股数据，程序退出")
         return
