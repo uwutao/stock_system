@@ -1,3 +1,15 @@
+"""
+文件：data/stock_collector.py
+功能：增量采集A股日线K线，包含估值pe/pb/ps/isST标记；单线程限流防ban
+数据源：baostock
+输出表：daily_kline
+"""
+import sys
+import os
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import baostock as bs
 import pandas as pd
 import time
@@ -34,7 +46,6 @@ def baostock_relogin():
     bs_session = lg
     return True
 
-
 def clean_empty_to_none(val):
     """baostock空字符串转为None，适配PG NULL"""
     if isinstance(val, str):
@@ -43,13 +54,11 @@ def clean_empty_to_none(val):
             return None
     return val
 
-
 def safe_float(x):
     """None安全浮点转换"""
     if x is None:
         return None
     return float(x)
-
 
 def get_stock_last_trade_date(stock_code: str):
     """
@@ -64,7 +73,6 @@ def get_stock_last_trade_date(stock_code: str):
             return None
         return row.max_dt
 
-
 def get_all_stocks():
     """获取所有A股股票代码和名称，读取type字段过滤指数/基金/债券"""
     try:
@@ -76,7 +84,6 @@ def get_all_stocks():
         # baostock新版：6列 code,name,ipoDate,outDate,type,status
         stock_df = pd.DataFrame(data_list, columns=['code', 'name', 'ipoDate', 'outDate', 'type', 'status'])
         stock_df['code'] = stock_df['code'].str.replace(r'^sh\.|^sz\.', '', regex=True)
-
         def is_tradable(row):
             code = row["code"]
             name = row["name"]
@@ -87,7 +94,6 @@ def get_all_stocks():
             if 'ST' in name or '*ST' in name or '退' in name:
                 return False
             return code.startswith(('600', '601', '603', '605', '000', '001', '300'))
-
         filtered_df = stock_df[stock_df.apply(is_tradable, axis=1)]
         print(f"✅ 总标的数：{len(stock_df)} | 可交易A股：{len(filtered_df)}")
         return filtered_df
@@ -95,7 +101,6 @@ def get_all_stocks():
         print(f"获取股票列表失败: {e}")
         time.sleep(1)
         return pd.DataFrame()
-
 
 @retry(
     stop=stop_after_attempt(COLLECTOR['max_retries']),
@@ -116,7 +121,8 @@ def get_stock_kline(stock_code, start_date):
         bs_code = f"sz.{stock_code}"
     else:
         return pd.DataFrame()
-    fields = "date,open,high,low,close,preclose,volume,amount,turn,pctChg"
+    # 增加peTTM,pbMRQ,psTTM,pcfNcfTTM,isST估值标记
+    fields = "date,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST"
     try:
         rs = bs.query_history_k_data_plus(
             code=bs_code,
@@ -140,7 +146,8 @@ def get_stock_kline(stock_code, start_date):
         return pd.DataFrame()
     df = pd.DataFrame(data_list, columns=[
         'trade_date', 'open', 'high', 'low', 'close', 'preclose',
-        'volume', 'amount', 'turnover', 'pct_chg'
+        'volume', 'amount', 'turnover', 'pct_chg',
+        'peTTM','pbMRQ','psTTM','pcfNcfTTM','isST'
     ])
     # 安全浮点转换
     df['open'] = df['open'].apply(safe_float)
@@ -152,6 +159,11 @@ def get_stock_kline(stock_code, start_date):
     df['amount'] = df['amount'].apply(safe_float)
     df['turnover'] = df['turnover'].apply(safe_float)
     df['pct_chg'] = df['pct_chg'].apply(safe_float)
+    df['peTTM'] = df['peTTM'].apply(safe_float)
+    df['pbMRQ'] = df['pbMRQ'].apply(safe_float)
+    df['psTTM'] = df['psTTM'].apply(safe_float)
+    df['pcfNcfTTM'] = df['pcfNcfTTM'].apply(safe_float)
+
     # 涨跌额
     df["change_amount"] = df.apply(lambda r: safe_float(r["close"]) - safe_float(r["preclose"]), axis=1)
     # 振幅
@@ -163,43 +175,50 @@ def get_stock_kline(stock_code, start_date):
     )
     return df
 
-
 def save_daily_kline(stock_code, stock_name):
     """
-    增量采集：自动读取库中最新日期，接续拉取；ON CONFLICT DO NOTHING
+    增量采集单只股票日线K线。
+    返回值：
+      "ok"       成功拉取并入库
+      "no_data"  标的本身无K线数据（退市/停牌/新股等）
+      "error"    请求或入库异常失败
     """
     try:
         last_dt = get_stock_last_trade_date(stock_code)
         today_str = date.today().strftime("%Y-%m-%d")
+
         if last_dt is not None:
             start_dt = (last_dt + timedelta(days=1)).strftime("%Y-%m-%d")
             logger.info(f"{stock_code} {stock_name} 库内最新:{last_dt}, 增量起始:{start_dt}")
-            # 如果起始日期已经大于今天，不需要请求baostock，直接跳过，节省请求
+
             if start_dt > today_str:
                 logger.info(f"{stock_code} {stock_name} 已采集至最新交易日，无需拉取数据")
-                return True
+                return "ok"
         else:
             start_dt = COLLECTOR['start_date']
             logger.info(f"{stock_code} {stock_name} 库无历史，全量起始:{start_dt}")
 
         df = get_stock_kline(stock_code, start_date=start_dt)
+
         if df.empty:
-            logger.warning(f"{stock_code} {stock_name} 查询返回空K线，无可用K线数据")
-            return False
+            logger.warning(f"[NO_DATA] {stock_code} {stock_name} 查询返回空K线，标的无行情")
+            return "no_data"
 
         df['stock_code'] = stock_code
         df['stock_name'] = stock_name
         chunk_size = 200
         total_rows = len(df)
-        logger.info(f"开始入库 {stock_code} {stock_name}，本次拉取 {total_rows} 行，分{(total_rows + chunk_size -1)//chunk_size}批")
+        logger.info(f"开始入库 {stock_code} {stock_name}，本次拉取 {total_rows} 行，分{(total_rows + chunk_size - 1) // chunk_size}批")
 
         insert_sql = text("""
             INSERT INTO daily_kline (
                 stock_code, stock_name, trade_date, open, high, low, close, preclose,
-                volume, amount, turnover, pct_chg, change_amount, amplitude
+                volume, amount, turnover, pct_chg, change_amount, amplitude,
+                peTTM, pbMRQ, psTTM, pcfNcfTTM, isST
             )
             VALUES (:stock_code, :stock_name, :trade_date, :open, :high, :low, :close, :preclose,
-                    :volume, :amount, :turnover, :pct_chg, :change_amount, :amplitude)
+                    :volume, :amount, :turnover, :pct_chg, :change_amount, :amplitude,
+                    :peTTM, :pbMRQ, :psTTM, :pcfNcfTTM, :isST)
             ON CONFLICT (stock_code, trade_date) DO NOTHING;
         """)
 
@@ -212,18 +231,18 @@ def save_daily_kline(stock_code, stock_name):
                     conn.commit()
                     inserted = result.rowcount
                     skip_cnt = len(batch_df) - inserted
-                    logger.info(f"  - {stock_code} 批次 {i // chunk_size +1}：收到{len(batch_df)}行，实际入库{inserted}行，冲突跳过{skip_cnt}行")
+                    logger.info(f"  - {stock_code} 批次 {i // chunk_size + 1}：收到{len(batch_df)}行，实际入库{inserted}行，冲突跳过{skip_cnt}行")
                 except Exception as e:
                     conn.rollback()
-                    logger.error(f"  ! {stock_code} 批次{i//chunk_size+1}写入异常: {str(e)}")
+                    logger.error(f"  ! {stock_code} 批次{i // chunk_size + 1}写入异常: {str(e)}")
                     raise
 
         logger.info(f"✅ {stock_code} {stock_name} 本轮处理完成，拉取{total_rows}行")
-        return True
-    except Exception as e:
-        logger.error(f"❌ 处理失败 {stock_code} {stock_name}: {str(e)}")
-        return False
+        return "ok"
 
+    except Exception as e:
+        logger.error(f"[ERROR] 处理失败 {stock_code} {stock_name}: {str(e)}")
+        return "error"
 
 def collect_all_stocks():
     """单线程串行采集，增加定时刷新会话，更长sleep"""
@@ -232,7 +251,6 @@ def collect_all_stocks():
     if stock_df.empty:
         print("❌ 获取股票列表为空，程序退出")
         return
-
     stock_df = stock_df[stock_df['code'].str.match(r'^(600|601|603|605|000|001|300)\d{3}$')]
     if stock_df.empty:
         print("❌ 过滤后无个股数据，程序退出")
@@ -241,28 +259,37 @@ def collect_all_stocks():
     print(f"待处理A股总数：{total_cnt}【单线程｜会话自动重连｜慢速限流】")
 
     success = 0
-    failed = 0
+    no_data = 0
+    error_fail = 0
     counter = 0
-    refresh_interval = 80 # 每处理80只股票主动刷新一次baostock会话，预防长连接被踢
+    refresh_interval = 80
+    failed_codes = []
 
     for _, row in tqdm(stock_df.iterrows(), total=total_cnt, desc="采集进度"):
         code, name = row['code'], row['name']
-        counter +=1
-        # 定时刷新会话
+        counter += 1
+
         if counter % refresh_interval == 0:
             logger.info(f"每{refresh_interval}只股票，主动刷新baostock会话")
             baostock_relogin()
 
         ret = save_daily_kline(code, name)
-        if ret:
-            success +=1
+
+        if ret == "ok":
+            success += 1
+        elif ret == "no_data":
+            no_data += 1
         else:
-            failed +=1
-        # 拉长休眠时间：0.6 ~1.2秒，降低请求频率，缓解服务端断连
-        time.sleep(random.uniform(0.6,1.2))
+            error_fail += 1
+            failed_codes.append((code, name))
 
-    print(f"\n采集一轮结束！成功:{success} | 失败:{failed}")
+        time.sleep(random.uniform(0.6, 1.2))
 
+    print(f"\n采集一轮结束！成功:{success} | 无行情(退市/停牌/新股等):{no_data} | 网络/接口异常失败:{error_fail}")
+    if failed_codes:
+        print("\n异常失败标的列表：")
+        for code, name in failed_codes:
+            print(f"  - {code} {name}")
 
 if __name__ == "__main__":
     lg = bs.login()

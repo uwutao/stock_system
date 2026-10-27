@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>A股K线AI筛选分析</title>
+    <style>
+        *{box-sizing: border-box;}
+        body { font-family: system-ui; padding:16px; margin:0; background:#f4f6f8; }
+        .container{max-width:1200px;margin:0 auto;}
+        .panel{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 1px 3px #00000018;}
+        .form-row{display:flex;gap:12px;align-items:center;margin-bottom:10px;flex-wrap:wrap;}
+        table{width:100%;border-collapse:collapse;margin-top:10px;}
+        th,td{border:1px solid #ddd;padding:8px;text-align:left;font-size:14px;}
+        th{background:#f7f8fa;}
+        button{padding:6px 12px;border-radius:4px;border:none;background:#2b7bdd;color:#fff;cursor:pointer;}
+        button:active{opacity:0.85;}
+        .btn-small{padding:3px 8px;font-size:12px;}
+        /* 弹窗 */
+        .modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.4);display:none;align-items:center;justify-content:center;z-index:99;}
+        .modal-content{width:650px;background:#fff;padding:20px;border-radius:8px;max-height:85vh;overflow:auto;}
+        /* 右侧聊天悬浮框 */
+        .chat-box{position:fixed;right:16px;bottom:16px;width:360px;background:#fff;border-radius:8px;box-shadow:0 2px 12px #00000022;z-index:80;display:flex;flex-direction:column;height:480px;}
+        .chat-header{padding:10px 12px;background:#2b7bdd;color:#fff;border-radius:8px 8px 0 0;font-weight:bold;}
+        .chat-body{flex:1;padding:10px;overflow-y:auto;font-size:14px;}
+        .chat-input-area{display:flex;gap:6px;padding:8px;border-top:1px solid #eee;}
+        .chat-input-area textarea{flex:1;height:60px;padding:6px;resize:none;border:1px solid #ccc;border-radius:4px;}
+        .msg-user{background:#e8f2ff;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre‑wrap;}
+        .msg‑ai{background:#f4f5f7;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre‑wrap;}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="panel">
+        <h3>A股批量筛选</h3>
+        <div class="form-row">
+            <div>最低价格：<input type="number" id="min_price" value="0"></div>
+            <div>最高价格：<input type="number" id="max_price" value="200"></div>
+            <div>返回数量：<input type="number" id="max_count" value="20"></div>
+            <div><input type="checkbox" id="use_llm"><label for="use_llm">开启批量简短AI分析</label></div>
+            <button onclick="runFilter()">执行筛选</button>
+        </div>
+        <div id="filter_result"></div>
+    </div>
+</div>
+
+<!-- 深度分析弹窗 -->
+<div class="modal" id="analyseModal">
+    <div class="modal-content">
+        <h4>个股深度K线分析</h4>
+        <div id="analyseContent"></div>
+        <div style="margin-top:12px;text-align:right;">
+            <button onclick="closeModal()">关闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- 右侧LLM聊天窗口 -->
+<div class="chat-box">
+    <div class="chat-header">LLM对话窗口</div>
+    <div class="chat-body" id="chatBody"></div>
+    <div class="chat-input-area">
+        <textarea id="chatInput" placeholder="输入你的问题，回车发送"></textarea>
+        <button onclick="sendChat()">发送</button>
+    </div>
+</div>
+
+<script>
+// 批量筛选
+async function runFilter(){
+    const min_price = Number(document.getElementById('min_price').value);
+    const max_price = Number(document.getElementById('max_price').value);
+    const max_count = Number(document.getElementById('max_count').value);
+    const use_llm = document.getElementById('use_llm').checked;
+    const res = await fetch("/api/run_filter",{
+        method:"POST",
+        headers:{"Content‑Type":"application/json"},
+        body:JSON.stringify({min_price,max_price,max_count,use_llm})
+    })
+    const json = await res.json();
+    const wrap = document.getElementById("filter_result");
+    if(json.code!==0){
+        wrap.innerHTML = `<div style="color:red;">错误：${json.msg}</div>`;
+        return;
+    }
+    const list = json.data;
+    if(list.length===0){
+        wrap.innerHTML="<div>没有筛选结果</div>";
+        return;
+    }
+    let html = `<table><tr>
+    <th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅%</th><th>换手率%</th><th>AI分数</th><th>简短AI分析</th><th>操作</th>
+    </tr>`;
+    for(let item of list){
+        html +=`<tr>
+        <td>${item.code}</td>
+        <td>${item.name}</td>
+        <td>${item.close}</td>
+        <td>${item.pct_chg}</td>
+        <td>${item.turnover}</td>
+        <td>${item.ai_score}</td>
+        <td>${item.llm_analysis||"-"}</td>
+        <td><button class="btn-small" onclick="openDeepAnalyse('${item.code}')">深度K线分析</button></td>
+        </tr>`;
+    }
+    html +=`</table>`;
+    wrap.innerHTML = html;
+}
+
+// 打开单只个股深度分析弹窗
+async function openDeepAnalyse(code){
+    const modal = document.getElementById("analyseModal");
+    const contentWrap = document.getElementById("analyseContent");
+    contentWrap.innerText = "请求分析中，请稍候...";
+    modal.style.display="flex";
+    const resp = await fetch("/api/single_stock_analyse",{
+        method:"POST",
+        headers:{"Content‑Type":"application/json"},
+        body:JSON.stringify({stock_code:code})
+    })
+    const j = await resp.json();
+    if(j.code!==0){
+        contentWrap.innerHTML = `<div style="color:red;">${j.msg}</div>`;
+        return;
+    }
+    const stock = j.data.stock;
+    const ana = j.data.analysis;
+    let html = `
+    <div><b>股票：</b>${stock.stock_name}(${stock.stock_code})</div>
+    <div><b>行业：</b>${stock.industry||"无"}</div>
+    <div><b>收盘价：</b>${stock.close}</div>
+    <div><b>涨跌幅：</b>${stock.pct_chg}%</div>
+    <div><b>换手率：</b>${stock.turnover}%</div>
+    <div><b>PE(TTM)：</b>${stock.peTTM??"无数据"}</div>
+    <div><b>PB(MRQ)：</b>${stock.pbMRQ??"无数据"}</div>
+    <hr/>
+    <div><b>深度K线分析结果：</b></div>
+    <div style="white‑space:pre‑wrap;margin‑top:6px;">${ana.content}</div>
+    ${ana.think?`<div style="margin‑top:8px;color:#666;font‑size:13px;"><details><summary>查看模型思考过程</summary>${ana.think}</details></div>`:""}
+    `;
+    contentWrap.innerHTML = html;
+}
+
+function closeModal(){
+    document.getElementById("analyseModal").style.display="none";
+}
+
+// LLM聊天窗口
+async function sendChat(){
+    const inputDom = document.getElementById("chatInput");
+    const bodyDom = document.getElementById("chatBody");
+    const msg = inputDom.value.trim();
+    if(!msg) return;
+    bodyDom.innerHTML += `<div class="msg‑user">用户：${msg}</div>`;
+    inputDom.value="";
+    bodyDom.scrollTop = bodyDom.scrollHeight;
+    const res = await fetch("/api/chat_llm",{
+        method:"POST",
+        headers:{"Content‑Type":"application/json"},
+        body:JSON.stringify({msg:msg})
+    })
+    const j = await res.json();
+    if(j.code!==0){
+        bodyDom.innerHTML +=`<div class="msg‑ai">AI：错误 ${j.msg}</div>`;
+    }else{
+        let thinkHtml = j.data.think?`<details style="font‑size:12px;color:#777;"><summary>思考过程</summary>${j.data.think}</details>`:"";
+        bodyDom.innerHTML +=`<div class="msg‑ai">AI：${j.data.content} ${thinkHtml}</div>`;
+    }
+    bodyDom.scrollTop = bodyDom.scrollHeight;
+}
+
+// shift+enter换行，enter发送
+document.getElementById("chatInput").addEventListener("keydown",function(e){
+    if(e.key==="Enter" && !e.shiftKey){
+        e.preventDefault();
+        sendChat();
+    }
+})
+document.getElementById("analyseModal").addEventListener("click",function(e){
+    if(e.target===this) closeModal();
+})
+</script>
+</body>
+</html>

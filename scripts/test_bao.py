@@ -1,45 +1,19 @@
-import baostock as bs
-import pandas as pd
+#!/usr/bin/env python3
+# test_ollama.py
+"""ollama连通性测试脚本，验证WSL内python可以调用Windowsollama"""
+import requests
 
-# 直接复制你修好的 get_stock_kline 函数粘贴在这里
-def get_stock_kline(stock_code, start_date):
-    if stock_code.startswith(('600', '601', '603', '605')):
-        bs_code = f"sh.{stock_code}"
-    elif stock_code.startswith(('000', '001', '300')):
-        bs_code = f"sz.{stock_code}"
-    else:
-        return pd.DataFrame()
-
-    fields = "date,open,high,low,close,preclose,volume,amount,turn,pctChg"
-    rs = bs.query_history_k_data_plus(
-        code=bs_code,
-        fields=fields,
-        start_date=start_date,
-        end_date="",
-        frequency="d",
-        adjustflag="2"
-    )
-    print(f">>> 接口返回 error_code={rs.error_code}, msg={rs.error_msg}")
-
-    data_list = []
-    while (rs.error_code == '0') & rs.next():
-        data_list.append(rs.get_row_data())
-
-    if not data_list:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(data_list, columns=[
-        'trade_date', 'open', 'high', 'low', 'close', 'preclose',
-        'volume', 'amount', 'turnover', 'pct_chg'
-    ])
-    df["change_amount"] = df["close"].astype(float) - df["preclose"].astype(float)
-    return df
-
-# 测试
-if __name__ == "__main__":
-    lg = bs.login()
-    print(lg.error_msg)
-    df = get_stock_kline("600000", "2020-01-01")
-    print(f"行数:{len(df)}")
-    print(df.head())
-    bs.logout()
+url = "http://127.0.0.1:11434/api/generate"
+payload = {
+    "model": "deepseek-r1:7b",
+    "prompt": "一句话介绍A股",
+    "stream": False
+}
+try:
+    res = requests.post(url, json=payload, timeout=120)
+    print("状态码：", res.status_code)
+    print(res.json())
+except requests.exceptions.Timeout:
+    print("❌ 请求超时，模型推理太久，或者ollama卡住")
+except Exception as e:
+    print("❌ 异常：", repr(e))

@@ -14,13 +14,13 @@ REDIS = {
     'password': 'stock_redis_123',
     'db': 0
 }
-
-# Ollama配置（连接Windows上的Ollama服务）
+#ollama配置 wsl下转连接windowsollama命令：nohup socat TCP-LISTEN:11434,fork,bind=127.0.0.1 TCP:192.168.5.3:11434 > socat_ollama.log 2>&1 &
 OLLAMA = {
-    'host': 'http://host.docker.internal:11434',
+    'host': 'http://127.0.0.1:11434',
     'model': 'deepseek-r1:7b',
     'timeout': 120
 }
+
 
 # 数据采集配置
 COLLECTOR = {
