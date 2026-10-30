@@ -16,7 +16,7 @@ else:
     print("✅ baostock登录成功！")
 
 # 现在可以正常导入了
-from data.stock_collector import collect_all_stocks
+from data.stock_collector_bak import collect_all_stocks
 
 if __name__ == "__main__":
     try:

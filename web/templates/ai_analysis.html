@@ -32,7 +32,7 @@
 <body>
 <div class="container">
     <div class="panel">
-        <h3>A股批量筛选</h3>
+        <h3>A股批量筛选（多周期趋势加权）</h3>
         <div class="form-row">
             <div>最低价格：<input type="number" id="min_price" value="0"></div>
             <div>最高价格：<input type="number" id="max_price" value="200"></div>
@@ -85,8 +85,11 @@ async function runFilter(){
         wrap.innerHTML="<div>没有筛选结果</div>";
         return;
     }
+    // 表头增加：短周期、中周期、长周期、综合趋势分
     let html = `<table><tr>
-    <th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅%</th><th>换手率%</th><th>AI分数</th><th>简短AI分析</th><th>操作</th>
+    <th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅%</th><th>换手率%</th>
+    <th>短周期(2月)</th><th>中周期(1年)</th><th>长周期(3年)</th><th>综合趋势分</th>
+    <th>简短AI分析</th><th>操作</th>
     </tr>`;
     for(let item of list){
         html +=`<tr>
@@ -95,7 +98,10 @@ async function runFilter(){
         <td>${item.close}</td>
         <td>${item.pct_chg}</td>
         <td>${item.turnover}</td>
-        <td>${item.ai_score}</td>
+        <td>${item.trend_short_text}</td>
+        <td>${item.trend_mid_text}</td>
+        <td>${item.trend_long_text}</td>
+        <td>${item.ai_total_score}</td>
         <td>${item.llm_analysis||"-"}</td>
         <td><button class="btn-small" onclick="openDeepAnalyse('${item.code}')">深度K线分析</button></td>
         </tr>`;
@@ -103,7 +109,6 @@ async function runFilter(){
     html +=`</table>`;
     wrap.innerHTML = html;
 }
-
 // 打开单只个股【长周期深度分析】弹窗
 async function openDeepAnalyse(code){
     const modal = document.getElementById("analyseModal");
@@ -141,11 +146,9 @@ async function openDeepAnalyse(code){
     `;
     contentWrap.innerHTML = html;
 }
-
 function closeModal(){
     document.getElementById("analyseModal").style.display="none";
 }
-
 // LLM聊天窗口
 async function sendChat(){
     const inputDom = document.getElementById("chatInput");
@@ -169,7 +172,6 @@ async function sendChat(){
     }
     bodyDom.scrollTop = bodyDom.scrollHeight;
 }
-
 // shift+enter换行，enter发送
 document.getElementById("chatInput").addEventListener("keydown",function(e){
     if(e.key==="Enter" && !e.shiftKey){

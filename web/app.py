@@ -4,7 +4,7 @@ import sys,os
 # 关键：把项目根目录加入python搜索路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
-from database.db import execute_sql
+from database.db_bak import execute_sql
 # 导入全部函数：新增calc_stock_longterm_stats、call_llm_longterm_analysis
 from analysis.ai_filter import (
     ai_stock_filter,
