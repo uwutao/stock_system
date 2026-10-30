@@ -17,15 +17,16 @@
         .btn-small{padding:3px 8px;font-size:12px;}
         /* 弹窗 */
         .modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.4);display:none;align-items:center;justify-content:center;z-index:99;}
-        .modal-content{width:650px;background:#fff;padding:20px;border-radius:8px;max-height:85vh;overflow:auto;}
+        .modal-content{width:720px;background:#fff;padding:20px;border-radius:8px;max-height:85vh;overflow:auto;}
         /* 右侧聊天悬浮框 */
         .chat-box{position:fixed;right:16px;bottom:16px;width:360px;background:#fff;border-radius:8px;box-shadow:0 2px 12px #00000022;z-index:80;display:flex;flex-direction:column;height:480px;}
         .chat-header{padding:10px 12px;background:#2b7bdd;color:#fff;border-radius:8px 8px 0 0;font-weight:bold;}
         .chat-body{flex:1;padding:10px;overflow-y:auto;font-size:14px;}
         .chat-input-area{display:flex;gap:6px;padding:8px;border-top:1px solid #eee;}
         .chat-input-area textarea{flex:1;height:60px;padding:6px;resize:none;border:1px solid #ccc;border-radius:4px;}
-        .msg-user{background:#e8f2ff;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre‑wrap;}
-        .msg‑ai{background:#f4f5f7;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre‑wrap;}
+        .msg-user{background:#e8f2ff;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre-wrap;}
+        .msg-ai{background:#f4f5f7;padding:6px 8px;border-radius:4px;margin:4px 0;white-space:pre-wrap;}
+        .stat-item{margin:4px 0;font-size:13px;}
     </style>
 </head>
 <body>
@@ -42,18 +43,16 @@
         <div id="filter_result"></div>
     </div>
 </div>
-
-<!-- 深度分析弹窗 -->
+<!-- 深度分析弹窗（新版：展示3年统计指标 + LLM长周期研判结果） -->
 <div class="modal" id="analyseModal">
     <div class="modal-content">
-        <h4>个股深度K线分析</h4>
+        <h4>个股【近3年长周期深度K线分析】</h4>
         <div id="analyseContent"></div>
         <div style="margin-top:12px;text-align:right;">
             <button onclick="closeModal()">关闭</button>
         </div>
     </div>
 </div>
-
 <!-- 右侧LLM聊天窗口 -->
 <div class="chat-box">
     <div class="chat-header">LLM对话窗口</div>
@@ -63,7 +62,6 @@
         <button onclick="sendChat()">发送</button>
     </div>
 </div>
-
 <script>
 // 批量筛选
 async function runFilter(){
@@ -73,7 +71,7 @@ async function runFilter(){
     const use_llm = document.getElementById('use_llm').checked;
     const res = await fetch("/api/run_filter",{
         method:"POST",
-        headers:{"Content‑Type":"application/json"},
+        headers:{"Content-Type":"application/json"},
         body:JSON.stringify({min_price,max_price,max_count,use_llm})
     })
     const json = await res.json();
@@ -106,15 +104,15 @@ async function runFilter(){
     wrap.innerHTML = html;
 }
 
-// 打开单只个股深度分析弹窗
+// 打开单只个股【长周期深度分析】弹窗
 async function openDeepAnalyse(code){
     const modal = document.getElementById("analyseModal");
     const contentWrap = document.getElementById("analyseContent");
-    contentWrap.innerText = "请求分析中，请稍候...";
+    contentWrap.innerText = "正在读取历史K线，计算长周期统计指标，请稍候...";
     modal.style.display="flex";
     const resp = await fetch("/api/single_stock_analyse",{
         method:"POST",
-        headers:{"Content‑Type":"application/json"},
+        headers:{"Content-Type":"application/json"},
         body:JSON.stringify({stock_code:code})
     })
     const j = await resp.json();
@@ -122,20 +120,24 @@ async function openDeepAnalyse(code){
         contentWrap.innerHTML = `<div style="color:red;">${j.msg}</div>`;
         return;
     }
-    const stock = j.data.stock;
+    const stat = j.data.stock_stats;
     const ana = j.data.analysis;
     let html = `
-    <div><b>股票：</b>${stock.stock_name}(${stock.stock_code})</div>
-    <div><b>行业：</b>${stock.industry||"无"}</div>
-    <div><b>收盘价：</b>${stock.close}</div>
-    <div><b>涨跌幅：</b>${stock.pct_chg}%</div>
-    <div><b>换手率：</b>${stock.turnover}%</div>
-    <div><b>PE(TTM)：</b>${stock.peTTM??"无数据"}</div>
-    <div><b>PB(MRQ)：</b>${stock.pbMRQ??"无数据"}</div>
-    <hr/>
-    <div><b>深度K线分析结果：</b></div>
-    <div style="white‑space:pre‑wrap;margin‑top:6px;">${ana.content}</div>
-    ${ana.think?`<div style="margin‑top:8px;color:#666;font‑size:13px;"><details><summary>查看模型思考过程</summary>${ana.think}</details></div>`:""}
+    <div class="stat-item"><b>股票：</b>${stat.stock_name}(${stat.stock_code})</div>
+    <div class="stat-item"><b>行业：</b>${stat.industry||"无"}</div>
+    <div class="stat-item"><b>有效历史交易日：</b>${stat.data_days}天</div>
+    <hr>
+    <div class="stat-item"><b>近3年总涨跌幅：</b>${stat.total_return_3y_pct}%</div>
+    <div class="stat-item"><b>现价3年价格分位：</b>${stat.price_3y_percentile}%（0最低，100最高）</div>
+    <div class="stat-item"><b>3年区间最高：</b>${stat.max_price_3y}｜最低：${stat.min_price_3y}</div>
+    <div class="stat-item"><b>近三年最大回撤：</b>${stat.max_drawdown_3y_pct}%</div>
+    <div class="stat-item"><b>近250日平均换手率：</b>${stat.turnover_mean_250}%</div>
+    <div class="stat-item"><b>PE(TTM)：</b>${stat.pe_latest??"无数据"}｜PE3年分位：${stat.pe_3y_percentile??"无数据"}%</div>
+    <div class="stat-item"><b>PB(MRQ)：</b>${stat.pb_latest??"无数据"}｜PB3年分位：${stat.pb_3y_percentile??"无数据"}%</div>
+    <hr />
+    <div><b>📊 LLM长周期综合研判结果：</b></div>
+    <div style="white-space:pre-wrap;margin-top:6px;">${ana.content}</div>
+    ${ana.think?`<div style="margin-top:8px;color:#666;font-size:13px;"><details><summary>查看模型思考过程</summary>${ana.think}</details></div>`:""}
     `;
     contentWrap.innerHTML = html;
 }
@@ -150,20 +152,20 @@ async function sendChat(){
     const bodyDom = document.getElementById("chatBody");
     const msg = inputDom.value.trim();
     if(!msg) return;
-    bodyDom.innerHTML += `<div class="msg‑user">用户：${msg}</div>`;
+    bodyDom.innerHTML += `<div class="msg-user">用户：${msg}</div>`;
     inputDom.value="";
     bodyDom.scrollTop = bodyDom.scrollHeight;
     const res = await fetch("/api/chat_llm",{
         method:"POST",
-        headers:{"Content‑Type":"application/json"},
+        headers:{"Content-Type":"application/json"},
         body:JSON.stringify({msg:msg})
     })
     const j = await res.json();
     if(j.code!==0){
-        bodyDom.innerHTML +=`<div class="msg‑ai">AI：错误 ${j.msg}</div>`;
+        bodyDom.innerHTML +=`<div class="msg-ai">AI：错误 ${j.msg}</div>`;
     }else{
-        let thinkHtml = j.data.think?`<details style="font‑size:12px;color:#777;"><summary>思考过程</summary>${j.data.think}</details>`:"";
-        bodyDom.innerHTML +=`<div class="msg‑ai">AI：${j.data.content} ${thinkHtml}</div>`;
+        let thinkHtml = j.data.think?`<details style="font-size:12px;color:#777;"><summary>思考过程</summary>${j.data.think}</details>`:"";
+        bodyDom.innerHTML +=`<div class="msg-ai">AI：${j.data.content} ${thinkHtml}</div>`;
     }
     bodyDom.scrollTop = bodyDom.scrollHeight;
 }
